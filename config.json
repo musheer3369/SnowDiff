@@ -1,0 +1,20 @@
+{
+  "instance_a": {
+    "url": "https://ricohcanadadev.service-now.com",
+    "user": "moe.mohammad@ricoh-usa.com",
+    "password": "Password.1"
+  },
+  "instance_b": {
+     "url": "https://ricohcanadarna.service-now.com",
+    "user": "moe.mohammad@ricoh-usa.com",
+    "password": "Password.1"
+  },
+  "filter_query": "sys_created_byENDSWITH@ricoh-usa.com",
+   "default_table_name": "sys_script_include",
+    "available_tables": [
+        "sys_script_include",
+        "sys_script_client",
+        "sys_ui_action"
+
+    ]
+}
