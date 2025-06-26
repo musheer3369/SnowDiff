@@ -204,8 +204,13 @@ for TABLE in TABLES:
 </div>"""
 
 summary_table_html = f"""
-<table class="table table-bordered table-sm">
-<thead><tr><th>Name</th><th>Diff Count</th><th>Link</th></tr></thead><tbody>{summary_rows}</tbody></table>"""
+<div style="max-width: 800px; margin-bottom: 2rem;">
+<table class="table table-bordered table-sm table-hover">
+<thead><tr><th>Name</th><th>Diff Count</th><th>Link</th></tr></thead><tbody>{summary_rows}</tbody></table>
+</div>
+"""
+
+
 
 report_html = wrap_html(summary_table_html + detail_html)
 
