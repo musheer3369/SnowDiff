@@ -11,8 +11,8 @@ from collections import defaultdict
 with open('config.json', encoding='utf-8-sig') as f:
     config = json.load(f)
 
-INSTANCE1 = config['instances']['instance1']
-INSTANCE2 = config['instances']['instance2']
+SOURCE = config['instances']['source']
+TARGET = config['instances']['target']
 TABLES = config['tables']
 QUERY = config['query']
 OUTPUT_DIR = config['output_dir']
@@ -47,16 +47,14 @@ def extract_all_tags(root: ET.Element) -> dict:
         result[child.tag] = clean_text(text)
     return result
 
-def generate_side_by_side_diff_html(text1: str, text2: str) -> str:
+def generate_side_by_side_diff_html(text1: str, text2: str, source_host: str, target_host: str) -> str:
     diff_table = difflib.HtmlDiff(tabsize=4, wrapcolumn=80).make_table(
         text1.splitlines(),
         text2.splitlines(),
-        fromdesc='Instance1',
-        todesc='Instance2',
+        fromdesc=f'Source ({source_host})',
+        todesc=f'Target ({target_host})',
         context=False
     )
-
-
     style = """
     <style>
     table.diff { font-family: monospace; font-size: 0.8rem; border-collapse: collapse; width: 100%; }
@@ -67,7 +65,7 @@ def generate_side_by_side_diff_html(text1: str, text2: str) -> str:
     """
     return style + diff_table
 
-def wrap_html_report(all_sections_html: str, summary_html: str) -> str:
+def wrap_html_report(all_sections_html: str, summary_html: str, source_host: str, target_host: str) -> str:
     return f"""<!DOCTYPE html><html><head><title>Comparison Report</title>
 <link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.0/css/bootstrap.min.css" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.0/js/bootstrap.bundle.min.js"></script>
@@ -78,6 +76,9 @@ html {{ scroll-behavior: smooth; }}
 </style></head><body class="p-3">
 
 <h1>Comparison Report</h1>
+<h3>Source: {source_host}</h3>
+<h3>Target: {target_host}</h3>
+
 <div class="mb-3">
   <button class="btn btn-sm btn-primary" onclick="filterAllRecords('all')">Show All</button>
   <button class="btn btn-sm btn-danger" onclick="filterAllRecords('changed')">Show Changed Only</button>
@@ -153,11 +154,9 @@ def generate_summary_html(summary_data):
   <td class="text-center">{status_class.capitalize()}</td>
   <td class="text-center"><a href="{jump_link}" class="btn btn-sm btn-link">View</a></td>
 </tr>"""
-    return f"""
-<h2>Summary by Table and Record</h2>
+    return f"""<h2>Summary by Table and Record</h2>
 <table id="summary-table" class="table table-sm table-striped table-hover table-bordered w-auto align-middle">
 <thead><tr><th>Record</th><th>Diffs</th><th>Status</th><th>Link</th></tr></thead><tbody>{summary_rows}</tbody></table>"""
-
 
 def generate_detail_table(data1, data2, record_name):
     record_name = clean_text(record_name)
@@ -178,7 +177,7 @@ def generate_detail_table(data1, data2, record_name):
         row_html = ""
 
         if "script" in key.lower() and val1 != val2:
-            diff_html = generate_side_by_side_diff_html(val1, val2)
+            diff_html = generate_side_by_side_diff_html(val1, val2, SOURCE['host'], TARGET['host'])
             popup_id = f"{record_id}_{key}"
             row_html = f"""
 <tr data-status="{status.lower()}"><td>{key}</td><td colspan="2">
@@ -196,7 +195,7 @@ def generate_detail_table(data1, data2, record_name):
 <button class="btn btn-sm btn-primary" onclick="filterDetailRows('record-{record_id}', 'all')">All</button>
 <button class="btn btn-sm btn-danger" onclick="filterDetailRows('record-{record_id}', 'changed')">Changed</button>
 <button class="btn btn-sm btn-secondary" onclick="filterDetailRows('record-{record_id}', 'unchanged')">Unchanged</button>
-<table class="table table-bordered table-sm"><thead><tr><th>Field</th><th>Instance1</th><th>Instance2</th><th>Status</th></tr></thead><tbody>{detail_rows}</tbody></table></div>"""
+<table class="table table-bordered table-sm"><thead><tr><th>Field</th><th>Source</th><th>Target</th><th>Status</th></tr></thead><tbody>{detail_rows}</tbody></table></div>"""
 
 # ==================== Main ====================
 
@@ -207,21 +206,21 @@ def main():
 
     for table in TABLES:
         print(f"[INFO] Processing table: {table}")
-        records = get_records(INSTANCE1['host'], INSTANCE1['user'], INSTANCE1['pass'], table, QUERY)
+        records = get_records(SOURCE['host'], SOURCE['user'], SOURCE['pass'], table, QUERY)
         for record in records:
             raw_name = record.get('name') or record.get('short_description') or record['sys_id']
             record_name = clean_text(raw_name)
             sys_id = record['sys_id']
 
-            data1 = extract_all_tags(fetch_xml(INSTANCE1['host'], table, sys_id, INSTANCE1['user'], INSTANCE1['pass']))
-            data2 = extract_all_tags(fetch_xml(INSTANCE2['host'], table, sys_id, INSTANCE2['user'], INSTANCE2['pass']))
+            data1 = extract_all_tags(fetch_xml(SOURCE['host'], table, sys_id, SOURCE['user'], SOURCE['pass']))
+            data2 = extract_all_tags(fetch_xml(TARGET['host'], table, sys_id, TARGET['user'], TARGET['pass']))
 
             diff_count, detail_html = generate_detail_table(data1, data2, record_name)
             summary_data.append((table, record_name, diff_count))
             sections_html.append(detail_html)
 
     summary_html = generate_summary_html(summary_data)
-    report_html = wrap_html_report("\n".join(sections_html), summary_html)
+    report_html = wrap_html_report("\n".join(sections_html), summary_html, SOURCE['host'], TARGET['host'])
 
     output_path = os.path.join(OUTPUT_DIR, "comparison_report.html")
     with open(output_path, "w", encoding="utf-8") as f:
