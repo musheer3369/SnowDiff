@@ -1,11 +1,11 @@
 {
   "instances": {
-    "instance1": {
+    "source": {
       "host": "ricohcanadadev",
       "user": "moe.mohammad@ricoh-usa.com",
       "pass": "Password.1"
     },
-    "instance2": {
+    "target": {
       "host": "ricohcanadarna",
       "user": "moe.mohammad@ricoh-usa.com",
       "pass": "Password.1"
