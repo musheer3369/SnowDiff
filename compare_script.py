@@ -55,6 +55,8 @@ def generate_side_by_side_diff_html(text1: str, text2: str) -> str:
         todesc='Instance2',
         context=False
     )
+
+
     style = """
     <style>
     table.diff { font-family: monospace; font-size: 0.8rem; border-collapse: collapse; width: 100%; }
