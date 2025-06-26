@@ -1,231 +1,215 @@
 import json
-import os
 import requests
+from requests.auth import HTTPBasicAuth
+from difflib import HtmlDiff
 import xml.etree.ElementTree as ET
-import jsbeautifier
-import difflib
-from collections import defaultdict
 
-# ==================== Load config ====================
-
-with open('config.json', encoding='utf-8-sig') as f:
+# Load config
+with open('config.json') as f:
     config = json.load(f)
 
-SOURCE = config['instances']['source']
-TARGET = config['instances']['target']
-TABLES = config['tables']
-QUERY = config['query']
-OUTPUT_DIR = config['output_dir']
+instances = {inst['name']: inst for inst in config['instances']}
+instance_names = list(instances.keys())
 
-# ==================== Helper Functions ====================
+print("Available instances:")
+for idx, name in enumerate(instance_names, 1):
+    print(f"{idx}. {name}")
 
-def clean_text(text: str) -> str:
-    return text.replace('\ufeff', '').replace('\u200b', '').strip()
+def select_instance(prompt):
+    while True:
+        choice = input(prompt)
+        if choice.isdigit() and 1 <= int(choice) <= len(instance_names):
+            return instances[instance_names[int(choice) - 1]]
+        print(f"Invalid input. Enter a number between 1 and {len(instance_names)}.")
 
-def get_records(host: str, user: str, password: str, table: str, query: str):
-    url = f"https://{host}.service-now.com/api/now/table/{table}"
+source = select_instance("Select source instance number: ")
+target = select_instance("Select target instance number: ")
+
+if source['name'] == target['name']:
+    print("Warning: Source and target are the same instance!")
+
+TABLES = config.get('tables', [])
+QUERY = config.get('query', '')
+
+def get_records(instance, table, query=''):
+    print(f"[INFO] Fetching records from {instance['name']} ({table}) with query: '{query}'")
     resp = requests.get(
-        url, auth=(user, password),
-        params={"sysparm_query": query, "sysparm_limit": "1000"}
+        f"{instance['host']}/api/now/table/{table}",
+        auth=HTTPBasicAuth(instance['user'], instance['pass']),
+        params={'sysparm_query': query, 'sysparm_limit': 100}
     )
     resp.raise_for_status()
-    return resp.json().get('result', [])
+    results = resp.json().get('result', []) or []
+    print(f"[INFO] Retrieved {len(results)} records from {instance['name']}:{table}")
+    return results
 
-def fetch_xml(host: str, table: str, sys_id: str, user: str, password: str) -> ET.Element:
-    url = f"https://{host}.service-now.com/{table}.do?XML&sys_id={sys_id}"
-    resp = requests.get(url, auth=(user, password))
-    resp.raise_for_status()
-    return ET.fromstring(resp.content)
-
-def extract_all_tags(root: ET.Element) -> dict:
-    record_node = list(root)[0]
-    result = {}
-    for child in record_node:
-        text = child.text or ""
-        if "script" in child.tag.lower():
-            text = jsbeautifier.beautify(text, jsbeautifier.default_options())
-        result[child.tag] = clean_text(text)
-    return result
-
-def generate_side_by_side_diff_html(text1: str, text2: str, source_host: str, target_host: str) -> str:
-    diff_table = difflib.HtmlDiff(tabsize=4, wrapcolumn=80).make_table(
-        text1.splitlines(),
-        text2.splitlines(),
-        fromdesc=f'Source ({source_host})',
-        todesc=f'Target ({target_host})',
-        context=False
+def get_record_xml(instance, table, sys_id):
+    print(f"[INFO] Downloading XML for sys_id={sys_id} from {instance['name']}:{table}")
+    resp = requests.get(
+        f"{instance['host']}/{table}.do?XML=&sys_id={sys_id}",
+        auth=HTTPBasicAuth(instance['user'], instance['pass'])
     )
-    style = """
-    <style>
-    table.diff { font-family: monospace; font-size: 0.8rem; border-collapse: collapse; width: 100%; }
-    .diff_add { background-color: #d4fcbc; }
-    .diff_chg { background-color: #fff3bf; }
-    .diff_sub { background-color: #fbb6b6; }
-    </style>
-    """
-    return style + diff_table
+    resp.raise_for_status()
+    return resp.text
 
-def wrap_html_report(all_sections_html: str, summary_html: str, source_host: str, target_host: str) -> str:
-    return f"""<!DOCTYPE html><html><head><title>Comparison Report</title>
+def parse_xml(xml_text):
+    root = ET.fromstring(xml_text)
+    data = {c.tag: (c.text or "") for c in root.findall(".//*") if c.tag != "xml"}
+    print(f"[DEBUG] Parsed XML with {len(data)} fields")
+    return data
+
+def diff_html(val1, val2):
+    differ = HtmlDiff(wrapcolumn=80)
+    html_diff = differ.make_table(
+        val1.splitlines() if val1 else [],
+        val2.splitlines() if val2 else [],
+        context=False,  # Show full diff without collapsing lines
+        numlines=0
+    )
+    print("[DEBUG] Generated HTML diff")
+    return html_diff
+
+def looks_like_javascript(text):
+    js_indicators = ['function', 'var ', 'let ', 'const ', '=>', 'console.', 'if(', 'for(', 'while(', '{', '}', ';']
+    text_lower = text.lower()
+    return any(ind in text_lower for ind in js_indicators)
+
+def wrap_html(content):
+    return f"""
+<html><head><title>ServiceNow Diff Report</title>
 <link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.0/css/bootstrap.min.css" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.0/js/bootstrap.bundle.min.js"></script>
 <style>
-html {{ scroll-behavior: smooth; }}
-.status-highlight {{ background:#fdecea !important; color:#d9534f; font-weight:bold; }}
-.modal-xl {{ max-width: 95% !important; }}
+table.table tbody tr.changed-row {{
+  background-color: #ffecec !important;
+}}
+pre {{
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 300px;
+  overflow: auto;
+}}
+.diff table {{
+  width: 100%;
+  border-collapse: collapse;
+}}
+.diff td {{
+  vertical-align: top;
+  padding: 4px;
+  font-family: monospace;
+  font-size: 0.8rem;
+}}
+.diff .diff_header {{
+  background: #eee;
+}}
+.diff .diff_add {{
+  background: #cfc;
+}}
+.diff .diff_sub {{
+  background: #fcc;
+}}
 </style></head><body class="p-3">
-
-<h1>Comparison Report</h1>
-<h3>Source: {source_host}</h3>
-<h3>Target: {target_host}</h3>
-
-<div class="mb-3">
-  <button class="btn btn-sm btn-primary" onclick="filterAllRecords('all')">Show All</button>
-  <button class="btn btn-sm btn-danger" onclick="filterAllRecords('changed')">Show Changed Only</button>
-  <button class="btn btn-sm btn-secondary" onclick="filterAllRecords('unchanged')">Show Unchanged Only</button>
+<h1>ServiceNow Comparison Report</h1>
+<p><strong>Comparing:</strong> {source['name']} ({source['host']}) <em>vs</em> {target['name']} ({target['host']})</p>
+<div class="mb-2">
+<button class="btn btn-sm btn-primary" onclick="filterAll()">Show All</button>
+<button class="btn btn-sm btn-danger" onclick="filterChanged()">Show Changed</button>
+<button class="btn btn-sm btn-secondary" onclick="filterUnchanged()">Show Unchanged</button>
 </div>
-
-{summary_html}
-<hr>{all_sections_html}
+{content}
 <script>
-function filterDetailRows(recordId, filterType) {{
-  let selector = recordId ? `#${{recordId}} table tbody tr` : 'div[id^="record-"] table tbody tr';
-  document.querySelectorAll(selector).forEach(tr => {{
-    const status = tr.getAttribute('data-status');
-    if (filterType === 'changed') {{
-      tr.style.display = status !== 'unchanged' ? '' : 'none';
-    }} else if (filterType === 'unchanged') {{
-      tr.style.display = status === 'unchanged' ? '' : 'none';
-    }} else {{
-      tr.style.display = '';
-    }}
-  }});
+function filterAll() {{
+  document.querySelectorAll('tr[data-status]').forEach(r => r.style.display = '');
+  document.querySelectorAll('[data-record-status]').forEach(r => r.style.display = '');
 }}
-
-function filterAllRecords(filterType) {{
-  document.querySelectorAll('div[id^="record-"]').forEach(div => {{
-    let changedCount = div.querySelectorAll('tr[data-status]:not([data-status="unchanged"])').length;
-    if (filterType === 'changed') {{
-      div.style.display = changedCount > 0 ? '' : 'none';
-    }} else if (filterType === 'unchanged') {{
-      div.style.display = changedCount === 0 ? '' : 'none';
-    }} else {{
-      div.style.display = '';
-    }}
-  }});
-  document.querySelectorAll('#summary-table tbody tr').forEach(tr => {{
-    if (tr.querySelector('td[colspan]')) {{
-      tr.style.display = '';
-      return;
-    }}
-    const status = tr.classList.contains('changed') ? 'changed' : 'unchanged';
-    if (filterType === 'changed') {{
-      tr.style.display = status === 'changed' ? '' : 'none';
-    }} else if (filterType === 'unchanged') {{
-      tr.style.display = status === 'unchanged' ? '' : 'none';
-    }} else {{
-      tr.style.display = '';
-    }}
-  }});
+function filterChanged() {{
+  document.querySelectorAll('tr[data-status]').forEach(r => r.style.display = r.dataset.status === 'changed' ? '' : 'none');
+  document.querySelectorAll('[data-record-status]').forEach(r => r.style.display = r.dataset.recordStatus === 'changed' ? '' : 'none');
 }}
-
+function filterUnchanged() {{
+  document.querySelectorAll('tr[data-status]').forEach(r => r.style.display = r.dataset.status === 'unchanged' ? '' : 'none');
+  document.querySelectorAll('[data-record-status]').forEach(r => r.style.display = r.dataset.recordStatus === 'unchanged' ? '' : 'none');
+}}
 function openModal(id) {{
   new bootstrap.Modal(document.getElementById(id)).show();
 }}
-</script></body></html>"""
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.0/js/bootstrap.bundle.min.js"></script>
+</body></html>"""
 
-def generate_summary_html(summary_data):
-    table_records = defaultdict(list)
-    for table_name, record_name, diff_count in summary_data:
-        record_name = clean_text(record_name)
-        table_records[table_name].append((record_name, diff_count))
+summary_rows = ""
+detail_html = ""
 
-    summary_rows = ""
-    for table_name, records in table_records.items():
-        summary_rows += f"""<tr><td colspan="4" class="table-primary"><strong>{table_name}</strong></td></tr>"""
-        for record_name, diff_count in records:
-            status_class = "changed" if diff_count > 0 else "unchanged"
-            color_class = "text-danger fw-bold" if diff_count > 0 else "text-success"
-            jump_link = f"#record-{record_name.replace(' ', '_').replace('.', '_')}"
-            summary_rows += f"""
-<tr class="{status_class}">
-  <td style="white-space: nowrap;">{record_name}</td>
-  <td class="{color_class}" style="text-align:center;">{diff_count}</td>
-  <td class="text-center">{status_class.capitalize()}</td>
-  <td class="text-center"><a href="{jump_link}" class="btn btn-sm btn-link">View</a></td>
+for TABLE in TABLES:
+    print(f"[INFO] Processing table: {TABLE}")
+    summary_rows += f"<tr><th colspan='3'>Table: {TABLE}</th></tr>"
+    source_records = get_records(source, TABLE, QUERY)
+    for record in source_records:
+        sys_id = record['sys_id']
+        name = record.get('name') or record.get('short_description') or sys_id
+        print(f"[INFO] Comparing record '{name}' (sys_id={sys_id})")
+        xml1 = get_record_xml(source, TABLE, sys_id)
+        xml2 = get_record_xml(target, TABLE, sys_id)
+        data1 = parse_xml(xml1)
+        data2 = parse_xml(xml2)
+        record_id = name.replace(' ', '_').replace('.', '_')
+        detail_rows = ""
+        modals_html = ""
+        diff_count = 0
+        for key in sorted(set(data1.keys()) | set(data2.keys())):
+            val1, val2 = data1.get(key, ""), data2.get(key, "")
+            status = "unchanged"
+            if val1 != val2:
+                status = "changed"
+                diff_count += 1
+                print(f"[DEBUG] Field changed: {key}")
+            row_class = "changed-row" if status == "changed" else ""
+
+            # Show 'Show Script' button only for changed fields containing JS code
+            if ("script" in key.lower() and val1 != val2 and
+                not (val1.lower() in ['true','false'] or val2.lower() in ['true','false']) and
+                (looks_like_javascript(val1) or looks_like_javascript(val2))):
+                diff_html_content = diff_html(val1, val2)
+                popup_id = f"{record_id}_{key}"
+                detail_rows += f"""
+<tr data-status="{status}" class="{row_class}">
+  <td>{key}</td>
+  <td colspan="2"><button class="btn btn-sm btn-primary" onclick="openModal('{popup_id}')">Show Script</button></td>
+  <td>{status}</td>
 </tr>"""
-    return f"""<h2>Summary by Table and Record</h2>
-<table id="summary-table" class="table table-sm table-striped table-hover table-bordered w-auto align-middle">
-<thead><tr><th>Record</th><th>Diffs</th><th>Status</th><th>Link</th></tr></thead><tbody>{summary_rows}</tbody></table>"""
+                modals_html += f"""
+<div class="modal fade" id="{popup_id}" tabindex="-1">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <div class="modal-content" style="max-height:80vh; overflow:auto; padding:1rem;" class="diff">
+      {diff_html_content}
+    </div>
+  </div>
+</div>"""
+            else:
+                detail_rows += f"""
+<tr data-status="{status}" class="{row_class}">
+  <td>{key}</td>
+  <td>{val1}</td>
+  <td>{val2}</td>
+  <td>{status}</td>
+</tr>"""
+        record_status = "changed" if diff_count > 0 else "unchanged"
+        summary_rows += f"<tr><td>{name}</td><td>{diff_count}</td><td><a href='#record-{record_id}'>Jump</a></td></tr>"
+        detail_html += f"""
+<div id="record-{record_id}" class="my-4" data-record-status="{record_status}">
+<h3>{name}</h3>
+<table class="table table-bordered table-sm">
+<thead><tr><th>Field</th><th>Source ({source['host']})</th><th>Target ({target['host']})</th><th>Status</th></tr></thead>
+<tbody>{detail_rows}</tbody></table>
+{modals_html}
+</div>"""
 
-def generate_detail_table(data1, data2, record_name):
-    record_name = clean_text(record_name)
-    all_keys = sorted(set(data1.keys()) | set(data2.keys()))
-    record_id = record_name.replace(' ', '_').replace('.', '_')
-    detail_rows = ""
-    diff_count = 0
-    for key in all_keys:
-        val1, val2 = data1.get(key, ""), data2.get(key, "")
-        status = "Unchanged"
-        if val1 != val2:
-            status = "Changed"
-        elif val1 and not val2:
-            status = "Removed"
-        elif val2 and not val1:
-            status = "Added"
-        status_class = "status-highlight" if status != "Unchanged" else ""
-        row_html = ""
+summary_table_html = f"""
+<table class="table table-bordered table-sm">
+<thead><tr><th>Name</th><th>Diff Count</th><th>Link</th></tr></thead><tbody>{summary_rows}</tbody></table>"""
 
-        if "script" in key.lower() and val1 != val2:
-            diff_html = generate_side_by_side_diff_html(val1, val2, SOURCE['host'], TARGET['host'])
-            popup_id = f"{record_id}_{key}"
-            row_html = f"""
-<tr data-status="{status.lower()}"><td>{key}</td><td colspan="2">
-<button class="btn btn-sm btn-primary" onclick="openModal('{popup_id}')">View Diff</button>
-<div class="modal fade" id="{popup_id}" tabindex="-1"><div class="modal-dialog modal-xl"><div class="modal-content"><div class="modal-body">{diff_html}</div></div></div></div></td><td class="{status_class}">{status}</td></tr>"""
-        else:
-            row_html = f"""
-<tr data-status="{status.lower()}"><td>{key}</td><td>{val1}</td><td>{val2}</td><td class="{status_class}">{status}</td></tr>"""
-        detail_rows += row_html
-        if status != "Unchanged":
-            diff_count += 1
+report_html = wrap_html(summary_table_html + detail_html)
 
-    return diff_count, f"""
-<div id="record-{record_id}" class="mb-4"><h3>{record_name}</h3>
-<button class="btn btn-sm btn-primary" onclick="filterDetailRows('record-{record_id}', 'all')">All</button>
-<button class="btn btn-sm btn-danger" onclick="filterDetailRows('record-{record_id}', 'changed')">Changed</button>
-<button class="btn btn-sm btn-secondary" onclick="filterDetailRows('record-{record_id}', 'unchanged')">Unchanged</button>
-<table class="table table-bordered table-sm"><thead><tr><th>Field</th><th>Source</th><th>Target</th><th>Status</th></tr></thead><tbody>{detail_rows}</tbody></table></div>"""
+with open('comparison_report.html', 'w', encoding='utf-8') as f:
+    f.write(report_html)
 
-# ==================== Main ====================
-
-def main():
-    summary_data = []
-    sections_html = []
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-    for table in TABLES:
-        print(f"[INFO] Processing table: {table}")
-        records = get_records(SOURCE['host'], SOURCE['user'], SOURCE['pass'], table, QUERY)
-        for record in records:
-            raw_name = record.get('name') or record.get('short_description') or record['sys_id']
-            record_name = clean_text(raw_name)
-            sys_id = record['sys_id']
-
-            data1 = extract_all_tags(fetch_xml(SOURCE['host'], table, sys_id, SOURCE['user'], SOURCE['pass']))
-            data2 = extract_all_tags(fetch_xml(TARGET['host'], table, sys_id, TARGET['user'], TARGET['pass']))
-
-            diff_count, detail_html = generate_detail_table(data1, data2, record_name)
-            summary_data.append((table, record_name, diff_count))
-            sections_html.append(detail_html)
-
-    summary_html = generate_summary_html(summary_data)
-    report_html = wrap_html_report("\n".join(sections_html), summary_html, SOURCE['host'], TARGET['host'])
-
-    output_path = os.path.join(OUTPUT_DIR, "comparison_report.html")
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write(report_html)
-    print(f"[✅] Report saved to {output_path}")
-
-if __name__ == "__main__":
-    main()
+print("✅ comparison_report.html generated!")
