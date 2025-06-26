@@ -1,20 +1,17 @@
 {
-  "instance_a": {
-    "url": "https://ricohcanadadev.service-now.com",
-    "user": "moe.mohammad@ricoh-usa.com",
-    "password": "Password.1"
+  "instances": {
+    "instance1": {
+      "host": "ricohcanadadev",
+      "user": "moe.mohammad@ricoh-usa.com",
+      "pass": "Password.1"
+    },
+    "instance2": {
+      "host": "ricohcanadarna",
+      "user": "moe.mohammad@ricoh-usa.com",
+      "pass": "Password.1"
+    }
   },
-  "instance_b": {
-     "url": "https://ricohcanadarna.service-now.com",
-    "user": "moe.mohammad@ricoh-usa.com",
-    "password": "Password.1"
-  },
-  "filter_query": "sys_created_byENDSWITH@ricoh-usa.com",
-   "default_table_name": "sys_script_include",
-    "available_tables": [
-        "sys_script_include",
-        "sys_script_client",
-        "sys_ui_action"
-
-    ]
+  "tables": ["sys_ui_action", "sys_ui_policy","sys_script","sys_script_client","sys_script_include","sys_ui_page"],
+  "query": "sys_created_byLIKE@ricoh-usa.com",
+  "output_dir": "comparison_reports"
 }

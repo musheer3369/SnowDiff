@@ -10,4 +10,4 @@ OUTPUT_DIR = "comparison_reports"
 TABLE = "sys_ui_action"
 QUERY = "sys_created_byLIKEricoh-usa.com"  # Encoded query for sys_created_by endswith @ricoh-usa.com
 
-TABLES = ["sys_ui_action", "sys_ui_policy","sys_script","sys_script_client","sys_script_include"]  # list of tables to compare
+TABLES = ["sys_ui_action", "sys_ui_policy","sys_script","sys_script_client","sys_script_include","sys_ui_page","sys_data_policy2"]  # list of tables to compare
